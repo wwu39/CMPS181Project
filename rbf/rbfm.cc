@@ -154,8 +154,13 @@ RC RecordBasedFileManager::readRecord(FileHandle &fileHandle, const vector<Attri
     // handle forwrding recursively
     if (recordEntry.offset >= 0) {
         // Retrieve the actual entry data
-        getRecordAtOffset(pageData, recordEntry.offset, recordDescriptor, data);
-        free(pageData);
+        if (recordEntry.length > 0) {
+            getRecordAtOffset(pageData, recordEntry.offset, recordDescriptor, data);
+            free(pageData);
+        } else {
+            free(pageData);
+            return RBFM_RECORD_DELETED;
+        }
     } else {
         free(pageData);
         RID newrid = {recordEntry.length, (uint32_t)(- recordEntry.offset)};
@@ -231,8 +236,6 @@ RC RecordBasedFileManager::printRecord(const vector<Attribute> &recordDescriptor
 // asg2 spec
 RC RecordBasedFileManager::deleteRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid) 
 {
-    // delete record by given rid
-    unsigned backupFreeSpaceOffset;
     // Retrieve the specific page
     void * pageData = malloc(PAGE_SIZE);
     if (fileHandle.readPage(rid.pageNum, pageData)) {
@@ -250,39 +253,27 @@ RC RecordBasedFileManager::deleteRecord(FileHandle &fileHandle, const vector<Att
     // Gets the slot directory record entry data
     SlotDirectoryRecordEntry recordEntry = getSlotDirectoryRecordEntry(pageData, rid.slotNum);
 
-    backupFreeSpaceOffset = slotHeader.freeSpaceOffset;
-    slotHeader.freeSpaceOffset += recordEntry.length;  //Update the freeSpaceOffset after deletion
-    setSlotDirectoryHeader(pageData, slotHeader); // Flush the updates to the array pageData
-
-    // Update the Record entries by increasing their offset by the length of the deleted entry
-    unsigned bytesToShift = 0; // This is used in the "shift data properly" part
-
-    for (unsigned i = rid.slotNum + 1; i <= slotHeader.recordEntriesNumber; i++)
-    {
-        SlotDirectoryRecordEntry updatedRecordEntry = getSlotDirectoryRecordEntry(pageData,i);
-        bytesToShift += updatedRecordEntry.length;
-        updatedRecordEntry.offset += recordEntry.length;
-        setSlotDirectoryRecordEntry(pageData,i,updatedRecordEntry);
-    }
-    // -----
-
-    // Shift the data properly
-    void* dataToShift  = malloc(bytesToShift); // Used to store the data to shift
-    memcpy(dataToShift, (char *)pageData + backupFreeSpaceOffset, bytesToShift); // Store data to shift in dataToShift
-    memcpy((char *)pageData + backupFreeSpaceOffset + recordEntry.length, (char *)dataToShift, bytesToShift); // Shift data
-    //----
-
-    //Flush pageData to the physical page
-    if (fileHandle.writePage(rid.pageNum, pageData)) {
+    // handle forwrding recursively --Weikai Wu
+    if (recordEntry.offset >= 0) {
+        if (recordEntry.length > 0) { // it's not deleted before
+            deleteRecordAtOffset(pageData, recordEntry, rid);
+            recordEntry.length = 0; // means this record deleted
+            setSlotDirectoryRecordEntry(pageData, rid.slotNum, recordEntry);
+            //Flush pageData to the physical page
+            if (fileHandle.writePage(rid.pageNum, pageData)) {
+                free(pageData);
+                return RBFM_WRITE_FAILED;
+            }
+            free(pageData);
+        } else {
+            free(pageData);
+            return RBFM_RECORD_DELETED;
+        }
+    } else {
         free(pageData);
-        free(dataToShift);
-        return RBFM_WRITE_FAILED;
+        RID newrid = {recordEntry.length, (uint32_t)(- recordEntry.offset)};
+        deleteRecord(fileHandle, recordDescriptor, newrid);
     }
-    //----
-
-    free(pageData);
-    free(dataToShift);
-    
     return SUCCESS;
 }
 
@@ -291,62 +282,70 @@ RC RecordBasedFileManager::updateRecord(FileHandle &fileHandle, const vector<Att
 {
     // Retrieve the specific page
     void * pageData = malloc(PAGE_SIZE);
-    RID newrid;
     if (fileHandle.readPage(rid.pageNum, pageData)) {
         free(pageData);
         return RBFM_READ_FAILED;
     }
 
-    // Checks if the specific slot id exists in the page -- no need to check since read already does it
-    /*
+    // Checks if the specific slot id exists in the page
     SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);
-    if(slotHeader.recordEntriesNumber < rid.slotNum) {
+    if (slotHeader.recordEntriesNumber < rid.slotNum) {
         free(pageData);
         return RBFM_SLOT_DN_EXIST;
     }
-    */
 
-    void * record = malloc(PAGE_SIZE);
-    if (readRecord(fileHandle, recordDescriptor, rid, record)!= SUCCESS) { // store the record to be updated in record
-        free(pageData); free(record);
-        return RBFM_READ_FAILED;
-    }
-    
-    unsigned updatedRecordSize = getRecordSize(recordDescriptor, data); // length of the updated record
-    unsigned currentRecordSize = getRecordSize(recordDescriptor, record); // length of the record to be updated
+    // Gets the slot directory record entry data
+    SlotDirectoryRecordEntry recordEntry = getSlotDirectoryRecordEntry(pageData, rid.slotNum);
 
-    if (getPageFreeSpaceSize(pageData) + currentRecordSize - updatedRecordSize >= 0) // if there is space in the page for the update
-    {
-        if (deleteRecord(fileHandle,recordDescriptor,rid)) { // delete the record
+    // handle forwrding recursively
+    if (recordEntry.offset >= 0) {
+        if (recordEntry.length > 0) { // it's not deleted before
+            void * record = malloc(PAGE_SIZE); // get the old record
+            getRecordAtOffset(pageData, recordEntry.offset, recordDescriptor, record);
+            // get sizes
+            unsigned oldRecordSize = getRecordSize(recordDescriptor, record);
+            unsigned newRecordSize = getRecordSize(recordDescriptor, data);
+            // delete old record
+            deleteRecordAtOffset(pageData, recordEntry, rid);
+            if (getPageFreeSpaceSize(pageData) + oldRecordSize - newRecordSize >= 0) { 
+                // if there is space in the page for the update
+                // FSptr changed after deletion, but N isn't
+                SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);
+                
+                // Updating record reference in the slot directory.
+                SlotDirectoryRecordEntry newRecordEntry {newRecordSize, (int32_t)(slotHeader.freeSpaceOffset - newRecordSize)};
+                setSlotDirectoryRecordEntry(pageData, rid.slotNum, newRecordEntry);
+                
+                // Updating the slot directory header.
+                slotHeader.freeSpaceOffset -= newRecordSize;
+                // slotHeader.recordEntriesNumber += 0; // unchanged
+                setSlotDirectoryHeader(pageData, slotHeader);
+
+                // Adding the record data.
+                setRecordAtOffset(pageData, slotHeader.freeSpaceOffset, recordDescriptor, data);
+            } else {
+                RID newrid;
+                if (insertRecord(fileHandle, recordDescriptor, data, newrid)) { // Insert the new record to another page
+                    free(pageData); free(record);
+                    return RBFM_UPDATE_FAILED_ON_INSERT;
+                }
+                // prepare a forwarding address
+                SlotDirectoryRecordEntry recordEntry {- newrid.slotNum, (int32_t)newrid.pageNum};
+                setSlotDirectoryRecordEntry(pageData, rid.slotNum, recordEntry); // Flush the changes to pageData
+            }
+            if (fileHandle.writePage(rid.pageNum, pageData)) { // Flush the changes to the physical page
+                free(pageData); free(record);
+                return RBFM_WRITE_FAILED;
+            }
             free(pageData); free(record);
-            return RBFM_UPDATE_FAILED_ON_DELETE;
-        }
-        if (insertRecordToPage(fileHandle,recordDescriptor,data,rid)) { // Insert the updated record by using Daniel's function
-            free(pageData); free(record);
-            return RBFM_UPDATE_FAILED_ON_INSERT;
+        } else {
+            free(pageData);
+            return RBFM_RECORD_DELETED;
         }
     } else {
-        if (deleteRecord(fileHandle, recordDescriptor, rid)) { // delete the record
-            free(pageData); free(record);
-            return RBFM_UPDATE_FAILED_ON_DELETE;
-        }
-        if (insertRecord(fileHandle, recordDescriptor, data, newrid)) { // Insert the updated record
-            free(pageData); free(record);
-            return RBFM_UPDATE_FAILED_ON_INSERT;
-        }
-        SlotDirectoryRecordEntry recordEntry = getSlotDirectoryRecordEntry(pageData, rid.slotNum); // prepare a recordEntry to implement Forwarding address
-
-        recordEntry.offset = - newrid.slotNum; // See @67&.h on piazza to understand these two lines of code
-        recordEntry.length =  newrid.pageNum;
-
-        setSlotDirectoryRecordEntry(pageData, rid.slotNum, recordEntry); // Flush the changes to pageData
-
-        if (fileHandle.writePage(rid.pageNum, pageData)) {// Flush the changes to the physical page
-            free(pageData); free(record);
-            return RBFM_WRITE_FAILED;
-        }
-        free(pageData); free(record);
-        return SUCCESS;
+        free(pageData);
+        RID newrid = {recordEntry.length, (uint32_t)(- recordEntry.offset)};
+        updateRecord(fileHandle, recordDescriptor, data, newrid);
     }
     return SUCCESS;
 }
@@ -355,7 +354,7 @@ RC RecordBasedFileManager::readAttribute(FileHandle &fileHandle, const vector<At
 {
     // checking the existence of the attribute
     bool attrFound = false; 
-    size_t i = 0;
+    size_t i = 0; // get the ith field
     size_t fieldCount = recordDescriptor.size();
     for (; i < fieldCount; ++i) {
         if (recordDescriptor[i].name == attributeName) {
@@ -364,26 +363,61 @@ RC RecordBasedFileManager::readAttribute(FileHandle &fileHandle, const vector<At
         }
     }
     if (!attrFound) return RBFM_ATTR_NOTFOUND;
-    // get the record
-    void * record = malloc(PAGE_SIZE);
-    if (!readRecord(fileHandle, recordDescriptor, rid, record)) {
-        free(record);
+
+    void * pageData = malloc(PAGE_SIZE);
+    // read page by pageNum
+    if (fileHandle.readPage(rid.pageNum, pageData))
         return RBFM_READ_FAILED;
-    }
-    // Parse the null indicator into an array
-    int nullIndicatorSize = getNullIndicatorSize(recordDescriptor.size());
-    char nullIndicator[nullIndicatorSize];
-    memset(nullIndicator, 0, nullIndicatorSize);
-    memcpy(nullIndicator, data, nullIndicatorSize);
-    if (fieldIsNull(nullIndicator, i)) { // if the field is null
-        int * a = new int(1 << (CHAR_BIT - 1)); // null indicator 1000 0000
-        memcpy((char*)data, a, 1); // copy that byte and done
-        delete a;
+    // Checks if the specific slot id exists in the page
+    SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);
+    if(slotHeader.recordEntriesNumber < rid.slotNum)
+        return RBFM_SLOT_DN_EXIST;
+    // Gets the slot directory record entry data
+    SlotDirectoryRecordEntry recordEntry = getSlotDirectoryRecordEntry(pageData, rid.slotNum);
+    
+    // handle forwrding recursively
+    if (recordEntry.offset >= 0) {
+        if (recordEntry.length <= 0) {  // it's not deleted before
+            free(pageData);
+            return RBFM_RECORD_DELETED;
+        }
+        // record format: |Num of Record|NI|CO1|CO2|...|F1|F2|...
+        // reading the ith field
+        // get to the start of the record
+        char * start = (char *) pageData + recordEntry.offset;
+        int rec_offset = 0; // offset relates to the start of the record
+        rec_offset += 2; // jump across Num of Record
+        // get the nullIndicator
+        int nullIndicatorSize = getNullIndicatorSize(recordDescriptor.size());
+        char nullIndicator[nullIndicatorSize];
+        memset(nullIndicator, 0, nullIndicatorSize);
+        memcpy(nullIndicator, start + rec_offset, nullIndicatorSize);
+        rec_offset += nullIndicatorSize;
+        if (fieldIsNull(nullIndicator, i)) { // if the field is null, memcpy 1000 0000 and done
+            unsigned a = (1 << (CHAR_BIT - 1));
+            memcpy(data, &a, 1);
+        } else {
+            unsigned a = (0 << (CHAR_BIT - 1));
+            memcpy(data, &a, 1); // if the field isn't null, memcpy 0000 0000
+            ColumnOffset fieldStart, fieldEnd;
+            
+            // the ith field starts at the END of the (i-1)th field
+            rec_offset += (sizeof(ColumnOffset) * (i - 1));
+            memcpy(&fieldStart, start + rec_offset, sizeof(ColumnOffset));
+
+            // where the ith field ends
+            rec_offset += sizeof(ColumnOffset); 
+            memcpy(&fieldEnd, start + rec_offset, sizeof(ColumnOffset));
+
+            // so we can get the size of the field
+            int fieldSize = fieldEnd - fieldStart;
+            memcpy((char *)data + 1, start + fieldStart, fieldSize); // get the field
+        }
+        free(pageData);
     } else {
-        int * a = new int(0 << (CHAR_BIT - 1)); // null indicator 0000 0000
-        memcpy((char*)data, a, 1); // copy that byte
-        delete a;
-        // ...
+        free(pageData);
+        RID newrid = {recordEntry.length, (uint32_t)(- recordEntry.offset)};
+        readAttribute(fileHandle, recordDescriptor, newrid, attributeName, data);
     }
     return SUCCESS;
 }
@@ -396,73 +430,17 @@ RC RecordBasedFileManager::scan(FileHandle &fileHandle,
       const vector<string> &attributeNames, // a list of projected attributes
       RBFM_ScanIterator &rbfm_ScanIterator) 
 {
-    for (unsigned i = 0; i < fileHandle.getNumberOfPages(); ++i) {
-        void * pageData = malloc(PAGE_SIZE);
-        fileHandle.readPage(i, pageData);
-    }
-    // ....
+    rbfm_ScanIterator.curRid = {0, 0};
+    rbfm_ScanIterator.fileHandle = fileHandle;
+    rbfm_ScanIterator.recordDescriptor = recordDescriptor;
+    rbfm_ScanIterator.conditionAttribute = conditionAttribute;
+    rbfm_ScanIterator.compOp = compOp;
+    rbfm_ScanIterator.value = value;
+    rbfm_ScanIterator.attributeNames = attributeNames;
     return SUCCESS;
 }
-
-RC RBFM_ScanIterator::getNextRecord(RID &rid, void *data) 
-{
-    return RBFM_EOF;
-}
-
-RC RBFM_ScanIterator::close()
-{ 
-    return -1;
-};
 
 // Private helper methods
-
-//Helper functions coded by students
-/* The reason why I decided to create this helper function for inserting records is because as you noticed, the regular insert function
-doesn't give us the necessary capabilities to update a record if we apply the method "insert after delete". In case of an updation and moving 
-to another page is not necessary, we have to preserve the same slotNum in the slot directory and fields in the slotHeader such as
-recordEntriesNumber must not be altered. The standard insert function fails to do so. The other problem is the fact that the insert function looks 
-for any page which has enough room to insert the record and we don't want that. We want the updated record to be inserted in the same page.
-I understand that we can modify the original function to meet our needs; however, I consider that practice to be a little messy since
-we don't want to mess up working code. All the functions are still subject to improvement, so if a bug is detected, try to fix it
-*/
-RC RecordBasedFileManager::insertRecordToPage(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const void *data, const RID &rid)
-{
-    unsigned recordSize = getRecordSize(recordDescriptor, data);
-    void *pageData = malloc(PAGE_SIZE);
-    if (pageData == NULL) {
-        free(pageData);
-        return RBFM_MALLOC_FAILED;
-    }
-
-    if (fileHandle.readPage(rid.pageNum, pageData)) {
-        free(pageData);
-        return RBFM_READ_FAILED;
-    }
-
-    // Adding the new record reference in the slot directory.
-    SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);
-
-    // Adding the new record reference in the slot directory.
-    SlotDirectoryRecordEntry newRecordEntry;
-    newRecordEntry.length = recordSize;
-    newRecordEntry.offset = slotHeader.freeSpaceOffset - recordSize;
-    setSlotDirectoryRecordEntry(pageData, rid.slotNum, newRecordEntry);
-
-    // Updating the slot directory header.
-    slotHeader.freeSpaceOffset = newRecordEntry.offset;
-    setSlotDirectoryHeader(pageData, slotHeader);
-
-    // Adding the record data.
-    setRecordAtOffset (pageData, newRecordEntry.offset, recordDescriptor, data);
-
-    if (fileHandle.writePage(rid.pageNum, pageData)) {
-        free(pageData);
-        return RBFM_WRITE_FAILED;
-    }
-    free(pageData);
-    return SUCCESS;
-
-}
 
 // Configures a new record based page, and puts it in "page".
 void RecordBasedFileManager::newRecordBasedPage(void * page)
@@ -701,4 +679,199 @@ void RecordBasedFileManager::getRecordAtOffset(void *page, unsigned offset, cons
         rec_offset += fieldSize;
         data_offset += fieldSize;
     }
+}
+
+void RecordBasedFileManager::deleteRecordAtOffset(void *page, const SlotDirectoryRecordEntry &recordEntry, const RID &rid) {
+    SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(page);
+    uint16_t backupFreeSpaceOffset = slotHeader.freeSpaceOffset;
+    slotHeader.freeSpaceOffset += recordEntry.length;  //Update the freeSpaceOffset after deletion
+    setSlotDirectoryHeader(page, slotHeader); // Flush the updates to the array pageData
+
+    // Update the Record entries by increasing their offset by the length of the deleted entry
+    unsigned bytesToShift = 0; // This is used in the "shift data properly" part
+
+    // shift every record after the deleted one to keep records compact
+    for (unsigned i = rid.slotNum + 1; i <= slotHeader.recordEntriesNumber; i++)
+    {
+        SlotDirectoryRecordEntry updatedRecordEntry = getSlotDirectoryRecordEntry(page, i);
+        bytesToShift += updatedRecordEntry.length;
+        updatedRecordEntry.offset += recordEntry.length;
+        setSlotDirectoryRecordEntry(page, i, updatedRecordEntry);
+    }
+    // -----
+
+    // Shift the data properly
+    void* dataToShift  = malloc(bytesToShift); // Used to store the data to shift
+    memcpy(dataToShift, (char *)page + backupFreeSpaceOffset, bytesToShift); // Store data to shift in dataToShift
+    memcpy((char *)page + backupFreeSpaceOffset + recordEntry.length, (char *)dataToShift, bytesToShift); // Shift data
+}
+
+
+
+// RBFM_ScanIterator methods
+
+RC RBFM_ScanIterator::getNextRecord(RID &rid, void *data) 
+{
+    void * pageData = malloc(PAGE_SIZE);
+    // for all pages
+    for (unsigned i = curRid.pageNum; i < fileHandle.getNumberOfPages(); ++i) {
+        fileHandle.readPage(i, pageData);
+        // get the number of records in the page
+        SlotDirectoryHeader slotHeader;
+        memcpy (&slotHeader, pageData, sizeof(SlotDirectoryHeader));
+        free(pageData);
+        // for all record in the page
+        for (unsigned j = curRid.slotNum; j < slotHeader.recordEntriesNumber; ++j) {
+            void * field = malloc(PAGE_SIZE);
+            int fieldSize;
+            // read the conditionAttribute
+            readAttribute(fileHandle, recordDescriptor, {i, j}, conditionAttribute, field, fieldSize);
+            // compare to value
+            int cmp = memcmp(field, value, fieldSize);
+            bool condition = false;
+            switch (compOp) {
+                case EQ_OP: if (cmp == 0) condition = true; break;
+                case LT_OP: if (cmp < 0) condition = true; break;
+                case LE_OP: if (cmp <= 0) condition = true; break;
+                case GT_OP: if (cmp > 0) condition = true; break;
+                case GE_OP: if (cmp >= 0) condition = true; break;
+                case NE_OP: if (cmp != 0) condition = true; break;
+                case NO_OP: condition = true; break;
+            }
+            if (condition) { // if satisfy condition, retrieve attributes
+                int numOfAttrs = attributeNames.size();
+                int nullIndicatorSize = int(ceil((double) numOfAttrs / CHAR_BIT));
+                char nullIndicator[nullIndicatorSize];
+                memset(nullIndicator, 0, nullIndicatorSize);
+                int offset = nullIndicatorSize;
+                for (int k = 0; k < numOfAttrs; ++k) {
+                    readAttribute(fileHandle, recordDescriptor, {i, j}, attributeNames[k], field, fieldSize);
+                    // if the first byte of field isn't 0, the field is null
+                    // set the corresponding NI bit to 1
+                    // the corresponding bit is at byte k/8, bit k%8
+                    if (*(char*)field) nullIndicator[k / CHAR_BIT] |= 1 << (k % CHAR_BIT);
+                    // skip the first bytes (NI bytes) of field
+                    memcpy((char*)data + offset, (char*)field + 1, fieldSize);
+                    offset += fieldSize;
+                }
+                // finally copy NI
+                memcpy(data, nullIndicator, nullIndicatorSize);
+                return SUCCESS;
+            }
+        }
+    }
+    return RBFM_EOF;
+}
+
+// private helper
+
+SlotDirectoryHeader RBFM_ScanIterator::getSlotDirectoryHeader(void * page)
+{
+    // Getting the slot directory header.
+    SlotDirectoryHeader slotHeader;
+    memcpy (&slotHeader, page, sizeof(SlotDirectoryHeader));
+    return slotHeader;
+}
+
+SlotDirectoryRecordEntry RBFM_ScanIterator::getSlotDirectoryRecordEntry(void * page, unsigned recordEntryNumber)
+{
+    // Getting the slot directory entry data.
+    SlotDirectoryRecordEntry recordEntry;
+    memcpy  (
+            &recordEntry,
+            ((char*) page + sizeof(SlotDirectoryHeader) + recordEntryNumber * sizeof(SlotDirectoryRecordEntry)),
+            sizeof(SlotDirectoryRecordEntry)
+            );
+
+    return recordEntry;
+}
+
+RC RBFM_ScanIterator::readAttribute(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, const string &attributeName, void *data, int &fieldSize)
+{
+    // checking the existence of the attribute
+    bool attrFound = false; 
+    size_t i = 0; // get the ith field
+    size_t fieldCount = recordDescriptor.size();
+    for (; i < fieldCount; ++i) {
+        if (recordDescriptor[i].name == attributeName) {
+            attrFound = true;
+            break;
+        }
+    }
+    if (!attrFound) return RBFM_ATTR_NOTFOUND;
+
+    void * pageData = malloc(PAGE_SIZE);
+    // read page by pageNum
+    if (fileHandle.readPage(rid.pageNum, pageData))
+        return RBFM_READ_FAILED;
+    // Checks if the specific slot id exists in the page
+    SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);
+    if(slotHeader.recordEntriesNumber < rid.slotNum)
+        return RBFM_SLOT_DN_EXIST;
+    // Gets the slot directory record entry data
+    SlotDirectoryRecordEntry recordEntry = getSlotDirectoryRecordEntry(pageData, rid.slotNum);
+    
+    // handle forwrding recursively
+    if (recordEntry.offset >= 0) {
+        if (recordEntry.length <= 0) {  // it's not deleted before
+            free(pageData);
+            return RBFM_RECORD_DELETED;
+        }
+        // record format: |Num of Record|NI|CO1|CO2|...|F1|F2|...
+        // reading the ith field
+        // get to the start of the record
+        char * start = (char *) pageData + recordEntry.offset;
+        int rec_offset = 0; // offset relates to the start of the record
+        rec_offset += 2; // jump across Num of Record
+        // get the nullIndicator
+        int nullIndicatorSize = getNullIndicatorSize(recordDescriptor.size());
+        char nullIndicator[nullIndicatorSize];
+        memset(nullIndicator, 0, nullIndicatorSize);
+        memcpy(nullIndicator, start + rec_offset, nullIndicatorSize);
+        rec_offset += nullIndicatorSize;
+        if (fieldIsNull(nullIndicator, i)) { // if the field is null, memcpy 1000 0000 and done
+            unsigned a = (1 << (CHAR_BIT - 1));
+            memcpy(data, &a, 1);
+        } else {
+            unsigned a = (0 << (CHAR_BIT - 1));
+            memcpy(data, &a, 1); // if the field isn't null, memcpy 0000 0000
+            ColumnOffset fieldStart, fieldEnd;
+            
+            // the ith field starts at the END of the (i-1)th field
+            rec_offset += (sizeof(ColumnOffset) * (i - 1));
+            memcpy(&fieldStart, start + rec_offset, sizeof(ColumnOffset));
+
+            // where the ith field ends
+            rec_offset += sizeof(ColumnOffset); 
+            memcpy(&fieldEnd, start + rec_offset, sizeof(ColumnOffset));
+
+            // so we can get the size of the field
+            fieldSize = fieldEnd - fieldStart;
+            memcpy((char *)data + 1, start + fieldStart, fieldSize); // get the field
+        }
+        free(pageData);
+    } else {
+        free(pageData);
+        RID newrid = {recordEntry.length, (uint32_t)(- recordEntry.offset)};
+        readAttribute(fileHandle, recordDescriptor, newrid, attributeName, data, fieldSize);
+    }
+    return SUCCESS;
+}
+
+RC RBFM_ScanIterator::close()
+{
+    curRid = {0, 0};
+    return SUCCESS;
+};
+
+int RBFM_ScanIterator::getNullIndicatorSize(int fieldCount) 
+{
+    return int(ceil((double) fieldCount / CHAR_BIT));
+}
+
+bool RBFM_ScanIterator::fieldIsNull(char *nullIndicator, int i)
+{
+    int indicatorIndex = i / CHAR_BIT;
+    int indicatorMask  = 1 << (CHAR_BIT - 1 - (i % CHAR_BIT));
+    return (nullIndicator[indicatorIndex] & indicatorMask) != 0;
 }

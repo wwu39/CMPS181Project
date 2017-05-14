@@ -25,6 +25,7 @@
 #define RBFM_UPDATE_FAILED_ON_INSERT 9
 #define RBFM_ATTR_NOTFOUND 10
 #define RBFM_CLOSE_FAILED 11
+#define RBFM_RECORD_DELETED 12
 
 using namespace std;
 
@@ -98,9 +99,15 @@ The scan iterator is NOT required to be implemented for the part 1 of the projec
 //  rbfmScanIterator.close();
 
 class RBFM_ScanIterator {
-private:
-    vector<RID> result;
 public:
+    RID curRid;
+    FileHandle fileHandle;
+    vector<Attribute> recordDescriptor;
+    string conditionAttribute;
+    CompOp compOp;
+    const void *value;
+    vector<string> attributeNames;
+
   RBFM_ScanIterator() {};
   ~RBFM_ScanIterator() {};
 
@@ -109,6 +116,13 @@ public:
   // "data" follows the same format as RecordBasedFileManager::insertRecord().
   RC getNextRecord(RID &rid, void *data);
   RC close();
+private:
+    // similiar private methods vs rbfm class
+    RC readAttribute(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, const string &attributeName, void *data, int &fieldSize);
+    int getNullIndicatorSize(int fieldCount);
+    SlotDirectoryHeader getSlotDirectoryHeader(void * page);
+    SlotDirectoryRecordEntry getSlotDirectoryRecordEntry(void * page, unsigned recordEntryNumber);
+    bool fieldIsNull(char *nullIndicator, int i);
 };
 
 
@@ -180,9 +194,6 @@ private:
   static PagedFileManager *_pf_manager;
 
   // Private helper methods
-  // added by Daniel
-  // helper used in update
-  RC insertRecordToPage(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const void *data, const RID &rid);
 
   void newRecordBasedPage(void * page);
 
@@ -200,6 +211,7 @@ private:
 
   void setRecordAtOffset(void *page, unsigned offset, const vector<Attribute> &recordDescriptor, const void *data);
   void getRecordAtOffset(void *record, unsigned offset, const vector<Attribute> &recordDescriptor, void *data);
+  void deleteRecordAtOffset(void *page, const SlotDirectoryRecordEntry &recordEntry, const RID &rid);
 };
 
 #endif

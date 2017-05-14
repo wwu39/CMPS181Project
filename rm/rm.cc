@@ -27,13 +27,15 @@ RelationManager::~RelationManager()
 
 RC RelationManager::createCatalog()
 {
-    FileHandle fileHandle;
-    if (_rbfm->createFile("Tables")) return CATALOG_CREATE_FAIL;
-    if (_rbfm->openFile("Tables", fileHandle)) return RBFM_OPEN_FAILED;
+    // initialize Tables
+    FileHandle fileHandle; // we need a filehandle
+    if (_rbfm->createFile("Tables")) return CATALOG_CREATE_FAIL; // Create the file called Tables
+    if (_rbfm->openFile("Tables", fileHandle)) return RBFM_OPEN_FAILED; // open the file using filehandle
     addTable(1, "Tables", "Tables", fileHandle);
     addTable(2, "Columns", "Columns", fileHandle);
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 
+    // initialize Columns
     if ( _rbfm->createFile("Columns")) return CATALOG_CREATE_FAIL;
     if (_rbfm->openFile("Columns", fileHandle)) return RBFM_OPEN_FAILED;
 
@@ -55,30 +57,31 @@ RC RelationManager::createCatalog()
 // private helper
 void RelationManager::addTable (const int tableid, const string& tablename, const string filename, FileHandle& fileHandle) 
 {
-    // construct the recordDescriptor
+    // construct the recordDescriptor for Tables
     vector<Attribute> recordDescriptor;
     recordDescriptor.push_back( {"table-id", TypeInt, INT_SIZE } );
     recordDescriptor.push_back( {"table-name", TypeVarChar, 50 } );
     recordDescriptor.push_back( {"file-name", TypeVarChar, 50 } );
     RID rid; // we need an rid
-    char * data = (char *)malloc(PAGE_SIZE);
+    char * data = (char *)malloc(PAGE_SIZE); // |NI|F1|F2|...
     int offset = 0; // keep track of where we are
 
     // since none of the fields are null, we put 0000 0000 for 3 fields
     int NI = 0;
-    memcpy(data + offset, &NI, 1); offset += 1;
+    memcpy(data + offset, &NI, 1); offset += 1; // 1 byte null indicator
     // table-id
     memcpy(data + offset, &tableid, 4); offset += 4;
     // table-name
     int tablenameSize = tablename.size();
-    memcpy(data + offset, &tablenameSize, 4); offset += 4;
+    memcpy(data + offset, &tablenameSize, 4); offset += 4; // VacChar length
     memcpy(data + offset, tablename.c_str(), tablenameSize); offset += tablenameSize;
     // file-name
     int filenameSize = filename.size();
-    memcpy(data + offset, &filenameSize, 4); offset += 4;
+    memcpy(data + offset, &filenameSize, 4); offset += 4; // VacChar length
     memcpy(data + offset, filename.c_str(), filenameSize);
     // insert
-    if (_rbfm->insertRecord(fileHandle, recordDescriptor, data, rid));
+    _rbfm->insertRecord(fileHandle, recordDescriptor, data, rid);
+    free(data);
 }
 
 void RelationManager::addColumn (const int tableid, const string& colname, const AttrType coltype, 
@@ -110,12 +113,13 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     memcpy(data + offset, &colpos, 4); //offset += 4;
     // insert
     RID rid;
-    if (_rbfm->insertRecord(fileHandle, recordDescriptor, data, rid));
-
+    _rbfm->insertRecord(fileHandle, recordDescriptor, data, rid);
+    free(data);
 }
 
 RC RelationManager::deleteCatalog()
 {
+    // delete the 2 files
     if (_rbfm->destroyFile("Tables")) return CATALOG_DELETE_FAIL;
     if (_rbfm->destroyFile("Columns")) return CATALOG_DELETE_FAIL;
     tableidnumber = 0;
@@ -124,18 +128,19 @@ RC RelationManager::deleteCatalog()
 
 RC RelationManager::createTable(const string &tableName, const vector<Attribute> &attrs)
 {
-    ++tableidnumber;
-    if (_rbfm->createFile(tableName)) return CATALOG_CREATE_FAIL;
+    ++tableidnumber; // table-id
+    if (_rbfm->createFile(tableName)) return CATALOG_CREATE_FAIL; // create the table-file
 
     FileHandle fileHandle;
-    // add table
+
+    // register the new table in Tables
     if (_rbfm->openFile("Tables", fileHandle)) return RBFM_OPEN_FAILED;
     addTable(tableidnumber, tableName, tableName, fileHandle);
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 
-    // add all columns
+    // register all columns in Columns
     if(_rbfm->openFile("Columns", fileHandle)) return RBFM_OPEN_FAILED;
-    for(unsigned i = 0; i < attrs.size(); i++)
+    for(unsigned i = 0; i < attrs.size(); ++i)
         addColumn(tableidnumber, attrs[i].name, attrs[i].type, attrs[i].length, i + 1, fileHandle);
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 
@@ -145,33 +150,60 @@ RC RelationManager::createTable(const string &tableName, const vector<Attribute>
 
 RC RelationManager::deleteTable(const string &tableName)
 {
+    // delete the table-file only
     return (_rbfm->destroyFile(tableName));
 }
 
 RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &attrs)
 {
     FileHandle fileHandle;
-    if (_rbfm->openFile("Tables", fileHandle)) return RBFM_OPEN_FAILED;
-    vector<string> attrs1;
-    attrs1.push_back("table-id");
-    RM_ScanIterator rm_ScanIterator;
-    scan("Tables", "table-name" ,EQ_OP, tableName.c_str(), attrs1, rm_ScanIterator);
+    RBFM_ScanIterator rbfmsi;
     void * data = malloc(PAGE_SIZE);
     RID rid;
-    rm_ScanIterator.getNextTuple(rid, data);
-    int * tableid = (int*) malloc (sizeof (int));
-    memcpy(tableid, (char *)data + 1, 4);
-    rm_ScanIterator.close();
+
+    // find the table-id of the given table
+    if (_rbfm->openFile("Tables", fileHandle)) return RBFM_OPEN_FAILED;
+
+    // prepare the rd for Tables
+    vector<Attribute> tablesRecordDescriptor;
+    tablesRecordDescriptor.push_back( {"table-id", TypeInt, INT_SIZE } );
+    tablesRecordDescriptor.push_back( {"table-name", TypeVarChar, 50 } );
+    tablesRecordDescriptor.push_back( {"file-name", TypeVarChar, 50 } );
+
+    // projected attr names, we need table-id
+    vector<string> attrNames;
+    attrNames.push_back("table-id");
+    // SELECT table-id FROM Tables WHERE table-name=tableName
+    _rbfm->scan(fileHandle, tablesRecordDescriptor, "table-name", EQ_OP, tableName.c_str(), attrNames, rbfmsi);
+    // get the first match
+    int * tableid = (int *) malloc(INT_SIZE);
+    rbfmsi.getNextRecord(rid, data);
+    memcpy(tableid, (char*)data + 1, INT_SIZE); // 1st bytes is NI byte
+    rbfmsi.close();
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 
+
+    // use the tableid to find all columns
     if (_rbfm->openFile("Columns", fileHandle)) return RBFM_OPEN_FAILED;
+
+    // prepare the rd for Columns
+    vector<Attribute> columnsRecordDescriptor;
+    columnsRecordDescriptor.push_back( {"table-id", TypeInt, INT_SIZE } );
+    columnsRecordDescriptor.push_back( {"column-name", TypeVarChar, 50 } );
+    columnsRecordDescriptor.push_back( {"column-type", TypeInt, 4 } );
+    columnsRecordDescriptor.push_back( {"column-length", TypeInt, 4 } );
+    columnsRecordDescriptor.push_back( {"column-position", TypeInt, 4 } );
+
+    // projected attr names, we need column-name, column-type and column-length
     vector<string> attrs2;
     attrs2.push_back("column-name");
     attrs2.push_back("column-type");
     attrs2.push_back("column-length");
-    scan("Columns", "table-id", EQ_OP, tableid, attrs2, rm_ScanIterator);
-    while ( rm_ScanIterator.getNextTuple(rid, data) != RM_EOF ) {
-        int offset = 1;
+
+    // SELECT column-name, column-type, column-length FROM Columns WHERE table-id=*tableid;
+    _rbfm->scan(fileHandle, columnsRecordDescriptor, "table-id", EQ_OP, tableid, attrs2, rbfmsi);
+    while ( rbfmsi.getNextRecord(rid, data) != RBFM_EOF ) {
+        int offset = 1; // skip NI bytes
         int * vclen = (int*) malloc (sizeof(int));
         memcpy(vclen, (char*)data + offset, 4);
         offset += 4;
@@ -186,7 +218,7 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
         attrs.push_back({name, static_cast<AttrType>(*type), *length });
         free(vclen); free(name); free(type); free(length);
     }
-    free(tableid);
+    free(tableid); free(data);
     return SUCCESS;
 }
 
