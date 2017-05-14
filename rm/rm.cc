@@ -67,10 +67,10 @@ void RelationManager::addTable (const int tableid, const string& tablename, cons
     int offset = 0; // keep track of where we are
 
     // since none of the fields are null, we put 0000 0000 for 3 fields
-    int NI = 0;
+    uint8_t NI = 0;
     memcpy(data + offset, &NI, 1); offset += 1; // 1 byte null indicator
     // table-id
-    memcpy(data + offset, &tableid, 4); offset += 4;
+    memcpy(data + offset, &tableid, INT_SIZE); offset += INT_SIZE;
     // table-name
     int tablenameSize = tablename.size();
     memcpy(data + offset, &tablenameSize, 4); offset += 4; // VacChar length
@@ -96,7 +96,7 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     // since none of the fields are null, we put 0000 0000 for 3 fields
     char * data = (char *)malloc(PAGE_SIZE);
     int offset = 0;
-    int NI = 0;
+    uint8_t NI = 0;
     memcpy(data + offset, &NI, 1); offset += 1;
     // table-id
     memcpy(data + offset, &tableid, 4); offset += 4;
@@ -179,6 +179,7 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     int * tableid = (int *) malloc(INT_SIZE);
     rbfmsi.getNextRecord(rid, data);
     memcpy(tableid, (char*)data + 1, INT_SIZE); // 1st bytes is NI byte
+    cout << "table-id: " << *tableid << endl; 
     rbfmsi.close();
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 

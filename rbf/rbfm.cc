@@ -726,8 +726,27 @@ RC RBFM_ScanIterator::getNextRecord(RID &rid, void *data)
             int fieldSize;
             // read the conditionAttribute
             readAttribute(fileHandle, recordDescriptor, {i, j}, conditionAttribute, field, fieldSize);
+            // figure out the type of the field
+            AttrType conAttrType;
+            for (size_t i = 0; i < recordDescriptor.size(); ++i) {
+                if (recordDescriptor[i].name == conditionAttribute) {
+                    conAttrType = recordDescriptor[i].type;
+                    break;
+                }
+            }
             // compare to value
-            int cmp = memcmp(field, value, fieldSize);
+            int cmp; // comparson result
+            switch (conAttrType) {
+                case TypeInt:
+                    cmp = memcmp((char *)field + 1, value, INT_SIZE);
+                    break;
+                case TypeReal:
+                    cmp = memcmp((char *)field + 1, value, REAL_SIZE);
+                    break;
+                case TypeVarChar:
+                    cmp = memcmp((char *)field + 5, value, fieldSize);
+                    break;
+            }
             bool condition = false;
             switch (compOp) {
                 case EQ_OP: if (cmp == 0) condition = true; break;
