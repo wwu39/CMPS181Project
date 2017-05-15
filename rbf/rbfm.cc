@@ -330,7 +330,9 @@ RC RecordBasedFileManager::updateRecord(FileHandle &fileHandle, const vector<Att
                     return RBFM_UPDATE_FAILED_ON_INSERT;
                 }
                 // prepare a forwarding address
-                SlotDirectoryRecordEntry recordEntry {- newrid.slotNum, (int32_t)newrid.pageNum};
+                SlotDirectoryRecordEntry recordEntry;
+                recordEntry.length = newrid.pageNum;
+                recordEntry.offset = - newrid.slotNum;
                 setSlotDirectoryRecordEntry(pageData, rid.slotNum, recordEntry); // Flush the changes to pageData
             }
             if (fileHandle.writePage(rid.pageNum, pageData)) { // Flush the changes to the physical page
@@ -737,13 +739,13 @@ RC RBFM_ScanIterator::getNextRecord(RID &rid, void *data)
             // compare to value
             int cmp; // comparson result
             switch (conAttrType) {
-                case TypeInt:
+                case TypeInt: // skip the NI byte
                     cmp = memcmp((char *)field + 1, value, INT_SIZE);
                     break;
-                case TypeReal:
+                case TypeReal: // skip the NI byte
                     cmp = memcmp((char *)field + 1, value, REAL_SIZE);
                     break;
-                case TypeVarChar:
+                case TypeVarChar: // skip the NI byte + VarCharLength byte
                     cmp = memcmp((char *)field + 5, value, fieldSize);
                     break;
             }

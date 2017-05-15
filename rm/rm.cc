@@ -55,6 +55,7 @@ RC RelationManager::createCatalog()
 }
 
 // private helper
+// add a record to the Tables paged file
 void RelationManager::addTable (const int tableid, const string& tablename, const string filename, FileHandle& fileHandle) 
 {
     // construct the recordDescriptor for Tables
@@ -84,6 +85,7 @@ void RelationManager::addTable (const int tableid, const string& tablename, cons
     free(data);
 }
 
+// add a record to the Columns paged file
 void RelationManager::addColumn (const int tableid, const string& colname, const AttrType coltype, 
                 const int collen, const int colpos, FileHandle& fileHandle)
 {

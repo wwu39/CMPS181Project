@@ -81,7 +81,9 @@ private:
   static RecordBasedFileManager *_rbfm; // need an instance of rbfm
 
   // privet helpers
+  // add a record to the Tables paged file
   void addTable (const int tableid, const string& tablename, const string filename, FileHandle& fileHandle);
+  // add a record to the Columns paged file
   void addColumn (const int tableid, const string& colname, const AttrType coltype, 
                   const int collen, const int colpos, FileHandle& fileHandle);
 };

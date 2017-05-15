@@ -1,13 +1,44 @@
 1. Basic information
-Team Number : 
-Student ID# of Submitter:
-Name of Submitter: 
+Team Number : 31
+Student ID# of Submitter: 1498457
+Name of Submitter: Weikai Wu
 ID#s and Names for others on the Team
-
+1499215 Daniel Martinez
 
 2. Meta-data
 - Show your meta-data design (Tables and Columns table) and information about each column.
 
+Tables and Columns are generated as record based paged file. 
+Tables stores records with fields table-id, table-name, file-name.
+When catalog is created, Tables initializes as follow:
+
+table-id | table-name | file-name
+    1    | Tables     | Tables
+    2    | Columns    | Columns
+Columns stores records with fields table-id, column-name, column-type, column-length, column-position.
+When catalog is created, Tables initializes as follow:
+
+table-id |   column-name   | column-type | column-length | column-position
+    1    | table-id        | INT         | 4             | 1
+    1    | table-name      | VARCHAR     | 50            | 2
+    1    | file-name       | VARCHAR     | 50            | 3
+    2    | table-id        | INT         | 4             | 1
+    2    | column-name     | VARCHAR     | 50            | 2
+    2    | column-type     | INT         | 4             | 3
+    2    | column-length   | INT         | 4             | 4
+    2    | column-position | INT         | 4             | 5
+
+
+Everytime a new table is created, a tuple (table-id, table-name, file-name) is inserted to Tables;
+all of its columns (table-id, column-name, column-type, column-length, column-position) are insert to Columns.
+
+getAttributes: to get all the attributes for a specific table t
+    for each record rd in Tables
+        if record.table-name = t, then id <- record.table-id
+    for each record rd in Columns
+        if record.table-id = id, then attrs.push_back( {rd.column-name, rd.column-type, rd.column-position} )
+        
+Everytime a new table is deleted, remove the corresponding file.
 
 3. Internal Record Format
 - Show your record format design and describe how your design satisfies O(1) field access. If not, just mention that your team hasn't implemented this feature.
