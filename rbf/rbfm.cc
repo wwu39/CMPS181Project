@@ -303,11 +303,11 @@ RC RecordBasedFileManager::updateRecord(FileHandle &fileHandle, const vector<Att
             void * record = malloc(PAGE_SIZE); // get the old record
             getRecordAtOffset(pageData, recordEntry.offset, recordDescriptor, record);
             // get sizes
-            unsigned oldRecordSize = getRecordSize(recordDescriptor, record);
+            // unsigned oldRecordSize = getRecordSize(recordDescriptor, record);
             unsigned newRecordSize = getRecordSize(recordDescriptor, data);
             // delete old record
             deleteRecordAtOffset(pageData, recordEntry, rid);
-            if (getPageFreeSpaceSize(pageData) + oldRecordSize - newRecordSize >= 0) { 
+            if (getPageFreeSpaceSize(pageData) - newRecordSize >= 0) { 
                 // if there is space in the page for the update
                 // FSptr changed after deletion, but N isn't
                 SlotDirectoryHeader slotHeader = getSlotDirectoryHeader(pageData);

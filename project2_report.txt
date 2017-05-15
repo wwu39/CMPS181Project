@@ -4,6 +4,7 @@ Student ID# of Submitter: 1498457
 Name of Submitter: Weikai Wu
 ID#s and Names for others on the Team
 1499215 Daniel Martinez
+1317305 Abraham Chavez
 
 2. Meta-data
 - Show your meta-data design (Tables and Columns table) and information about each column.
@@ -39,25 +40,83 @@ getAttributes: to get all the attributes for a specific table t
         if record.table-id = id, then attrs.push_back( {rd.column-name, rd.column-type, rd.column-position} )
         
 Everytime a new table is deleted, remove the corresponding file.
+When the catalog is deleted, remove files Tables and Columns.
 
 3. Internal Record Format
 - Show your record format design and describe how your design satisfies O(1) field access. If not, just mention that your team hasn't implemented this feature.
 - Describe how you store a VarChar field.
 - Describe how you deal with an update and delete.
 
+We are using the record format provided by the solution:
+|NumOfFields|NullIndicator|ColumnOffset1|ColumnOffset2|...|Field1|Field2|...
+Note that ColumnOffset points to the END of the corresponding field.
+
+O(1) to access ith field as implementated in readAttribute:
+Calculate the location of ColumnOffset(1): startOfRecord + sizeof(NumOfFields) + sizeof(NullIndicator) + (i - 1) * sizeof(ColumnOffset)
+ColumnOffset(i-1) gives where Field(i-1) ends and where Field(i) starts.
+
+Storing a VarChar field: the actual length of the VarChar followed by the actual VarChar
 
 4. Page Format
 - Show your page format design.
 - Describe how you deal with an update and delete.
 
+We are using the Page format provided by the solution:
+
+|SlotHeader|SlotDirctoryRecordEntries ... | Free Space ... | Records...|
+
+Delete: 
+    fetch the page
+    check validity of rid
+    get the recordEntry
+    if offset is negative then this is a forward address, convert it to the new rid, recursively Delete with the new rid (new rid could be another forwarding address)
+    if it's length is 0 means it has been deleted before, record doesn't exist.
+    else it's on the page
+        move all records after the deleted one to the left by the number of bytes equal to the size of the deleted one
+        update the FreeSpace pointer
+        update the corresponding recordEntry: set the length to 0
+        flush the page
+
+Update:
+    fetch the page
+    check validity of rid
+    get the recordEntry
+    if offset is negative then this is a forward address, convert it to the new rid, recursively Update with the new rid (new rid could be another forwarding address)
+    if it's length is 0 means it has been deleted before, record doesn't exist.
+    else it's on the page
+        move all records after the updated one to the left by the number of bytes equal to the size of the updated one
+        update the FreeSpace pointer
+        if there is enough space, insert the new record to the current page, update FreeSpace pointer and corresponding recordEntry
+        else insert to the other page, save the new rid in corresponding recordEntry: negative offset => length = page #, offset = -slot #
+        flush the page
+
 
 5. File Format
 - Show your file format design
 
+File contains arbitary number of pages. Each page has 4096 bytes.
+
+|Page0|Page1|...
 
 
 6. Implementation Detail
 - Other implementation details goes here.
+
+Try to implement getNextRecord: add a lot of fields to RBFM_ScanIterator
+
+public:
+    RID curRid;
+    FileHandle fileHandle;
+    vector<Attribute> recordDescriptor;
+    string conditionAttribute;
+    CompOp compOp;
+    const void *value;
+    vector<string> attributeNames;
+    
+When getNextRecord is called, start at curRid, search the first record that satisfies the condition.
+Need FileHandle fileHandle to keep track of file
+Need vector<string> attributeNames to project attributes.
+Need string conditionAttribute, CompOp compOp, const void *value to evaluate conditions
 
 
 7. Other (optional)
