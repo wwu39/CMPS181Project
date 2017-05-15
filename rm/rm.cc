@@ -105,8 +105,7 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     memcpy(data + offset, &colnameSize, 4); offset += 4;
     memcpy(data + offset, colname.c_str(), colnameSize); offset += colnameSize;
     // column-type
-    int coltypeInt = (int) coltype;
-    memcpy(data + offset, &coltypeInt, 4); offset += 4;
+    memcpy(data + offset, &coltype, INT_SIZE); offset += INT_SIZE;
     // column-length
     memcpy(data + offset, &collen, 4); offset += 4;
     // column-position
@@ -114,6 +113,7 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     // insert
     RID rid;
     _rbfm->insertRecord(fileHandle, recordDescriptor, data, rid);
+    _rbfm->readRecord(fileHandle, recordDescriptor, rid, data);
     _rbfm->printRecord(recordDescriptor, data);
     free(data);
 }
@@ -195,8 +195,6 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     }
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
 
-    cout << tableid << endl;
-
 
     // use the tableid to find all columns
     if (_rbfm->openFile("Columns", fileHandle)) return RBFM_OPEN_FAILED;
@@ -213,11 +211,10 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     // read all pages in Columns
     for (rid.pageNum = 0; rid.pageNum < numOfPage; ++rid.pageNum) {
         // while has record to read
-        while(!_rbfm->readRecord(fileHandle, tablesRecordDescriptor, rid, data)) {
+        while(!_rbfm->readRecord(fileHandle, columnsRecordDescriptor, rid, data)) {
             int curTableid; // get the tableid
             memcpy(&curTableid, (char*)data + 1, INT_SIZE);
             if (curTableid == tableid) { // if tableid match
-
                 int offset = 5; // skip NI and Field1
                 int namesize;
                 memcpy(&namesize, (char*)data + offset, 4); offset += 4;
@@ -226,12 +223,12 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
                 name[namesize] = '\0';
 
                 AttrType type;
-                memcpy(&type, (char*)data + offset, 4); offset += 4;
+                memcpy(&type, (char*)data + offset, INT_SIZE); offset += INT_SIZE;
 
-                unsigned length;
-                memcpy(&length, (char*)data + offset, 4);
+                int length;
+                memcpy(&length, (char*)data + offset, sizeof(int));
 
-                attrs.push_back({string(name), type, length});
+                attrs.push_back({string(name), type, (unsigned)length});
             }
             ++rid.slotNum;
         }
