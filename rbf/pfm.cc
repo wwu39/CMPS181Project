@@ -57,7 +57,7 @@ RC PagedFileManager::destroyFile(const string &fileName)
 RC PagedFileManager::openFile(const string &fileName, FileHandle &fileHandle)
 {
     // If this handle already has an open file, error
-    if (fileHandle.getfd() != NULL)
+    if (fileHandle.getfd() != NULL) 
         return PFM_HANDLE_IN_USE;
 
     // If the file doesn't exist, error

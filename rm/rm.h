@@ -8,12 +8,12 @@
 
 #include "../rbf/rbfm.h"
 
-#define CATALOG_CREATE_FAIL 1
-#define CATALOG_DELETE_FAIL 2
-#define TUPLE_INSERT_FAIL 3
-#define TUPLE_DELETE_FAIL 4
-#define TUPLE_UPDATE_FAIL 5
-#define TUPLE_READ_FAIL 6
+#define CATALOG_CREATE_FAIL 13
+#define CATALOG_DELETE_FAIL 14
+#define TUPLE_INSERT_FAIL 15
+#define TUPLE_DELETE_FAIL 16
+#define TUPLE_UPDATE_FAIL 17
+#define TUPLE_READ_FAIL 18
 
 using namespace std;
 

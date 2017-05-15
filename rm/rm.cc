@@ -113,8 +113,6 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     // insert
     RID rid;
     _rbfm->insertRecord(fileHandle, recordDescriptor, data, rid);
-    _rbfm->readRecord(fileHandle, recordDescriptor, rid, data);
-    _rbfm->printRecord(recordDescriptor, data);
     free(data);
 }
 
@@ -233,7 +231,7 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
             ++rid.slotNum;
         }
     }
-
+    if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
     free(data);
     return SUCCESS;
 }
