@@ -114,6 +114,7 @@ void RelationManager::addColumn (const int tableid, const string& colname, const
     // insert
     RID rid;
     _rbfm->insertRecord(fileHandle, recordDescriptor, data, rid);
+    _rbfm->printRecord(recordDescriptor, data);
     free(data);
 }
 
@@ -170,18 +171,31 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     tablesRecordDescriptor.push_back( {"table-name", TypeVarChar, 50 } );
     tablesRecordDescriptor.push_back( {"file-name", TypeVarChar, 50 } );
 
-    // projected attr names, we need table-id
-    vector<string> attrNames;
-    attrNames.push_back("table-id");
-    // SELECT table-id FROM Tables WHERE table-name=tableName
-    _rbfm->scan(fileHandle, tablesRecordDescriptor, "table-name", EQ_OP, tableName.c_str(), attrNames, rbfmsi);
-    // get the first match
-    int * tableid = (int *) malloc(INT_SIZE);
-    rbfmsi.getNextRecord(rid, data);
-    memcpy(tableid, (char*)data + 1, INT_SIZE); // 1st bytes is NI byte
-    cout << "table-id: " << *tableid << endl; 
-    rbfmsi.close();
+    unsigned numOfPage = fileHandle.getNumberOfPages();
+    rid = {0, 0};
+    bool findTableid = false;
+    int tableid;
+    // read all pages in Tables
+    for (rid.pageNum = 0; rid.pageNum < numOfPage; ++rid.pageNum) {
+        // while has record to read
+        while(!_rbfm->readRecord(fileHandle, tablesRecordDescriptor, rid, data)) {
+            int tablenamesize;
+            memcpy(&tablenamesize, (char*)data + 5, INT_SIZE);
+            char tablename[tablenamesize + 1];
+            memcpy(tablename, (char*)data + 9, tablenamesize);
+            tablename[tablenamesize] = '\0';
+            if (tableName == string(tablename)) {
+                findTableid = true;
+                memcpy(&tableid, (char*)data + 1, INT_SIZE);
+                break;
+            }
+            if (findTableid) break;
+            ++rid.slotNum;
+        }
+    }
     if (_rbfm->closeFile(fileHandle)) return RBFM_CLOSE_FAILED;
+
+    cout << tableid << endl;
 
 
     // use the tableid to find all columns
@@ -195,33 +209,39 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     columnsRecordDescriptor.push_back( {"column-length", TypeInt, 4 } );
     columnsRecordDescriptor.push_back( {"column-position", TypeInt, 4 } );
 
-    // projected attr names, we need column-name, column-type and column-length
-    vector<string> attrs2;
-    attrs2.push_back("column-name");
-    attrs2.push_back("column-type");
-    attrs2.push_back("column-length");
+    rid = {0, 0};
+    // read all pages in Columns
+    for (rid.pageNum = 0; rid.pageNum < numOfPage; ++rid.pageNum) {
+        // while has record to read
+        while(!_rbfm->readRecord(fileHandle, tablesRecordDescriptor, rid, data)) {
+            int curTableid; // get the tableid
+            memcpy(&curTableid, (char*)data + 1, INT_SIZE);
+            if (curTableid == tableid) { // if tableid match
 
-    // SELECT column-name, column-type, column-length FROM Columns WHERE table-id=*tableid;
-    _rbfm->scan(fileHandle, columnsRecordDescriptor, "table-id", EQ_OP, tableid, attrs2, rbfmsi);
-    while ( rbfmsi.getNextRecord(rid, data) != RBFM_EOF ) {
-        int offset = 1; // skip NI bytes
-        int * vclen = (int*) malloc (sizeof(int));
-        memcpy(vclen, (char*)data + offset, 4);
-        offset += 4;
-        char * name = (char*) malloc(*vclen);
-        memcpy(name, (char *)data + offset, *vclen);
-        offset += *vclen;
-        int * type = (int*) malloc (sizeof(int));
-        memcpy(type, (char*)data + offset, 4);
-        offset += 4;
-        int * length = (int*) malloc (sizeof(int));
-        memcpy(length, (char*)data + offset, 4);
-        attrs.push_back({name, static_cast<AttrType>(*type), *length });
-        free(vclen); free(name); free(type); free(length);
+                int offset = 5; // skip NI and Field1
+                int namesize;
+                memcpy(&namesize, (char*)data + offset, 4); offset += 4;
+                char name[namesize + 1];
+                memcpy(name, (char*)data + offset, namesize); offset += namesize;
+                name[namesize] = '\0';
+
+                AttrType type;
+                memcpy(&type, (char*)data + offset, 4); offset += 4;
+
+                unsigned length;
+                memcpy(&length, (char*)data + offset, 4);
+
+                attrs.push_back({string(name), type, length});
+            }
+            ++rid.slotNum;
+        }
     }
-    free(tableid); free(data);
+
+    free(data);
     return SUCCESS;
 }
+
+
 
 RC RelationManager::insertTuple(const string &tableName, const void *data, RID &rid)
 {
